@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -80,6 +81,7 @@ class OilAgyTitleTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad):
                 oil_agy_title.validate_candidate({"action": "rename", "title": bad, "reason": "bad"}, "")
 
+    @mock.patch.object(sys, "platform", "linux")
     def test_manual_title_protection_and_confirmation_skip(self):
         cid = "11111111-2222-4333-8444-555555555555"
         conv = {
@@ -141,6 +143,7 @@ class OilAgyTitleTests(unittest.TestCase):
             "transcriptPath": "/Users/a/.gemini/antigravity-cli/brain/123/.system_generated/logs/transcript.jsonl"
         }))
 
+    @mock.patch.object(sys, "platform", "linux")
     def test_same_user_turn_hook_skips_repeat_model_call(self):
         cid = "22222222-3333-4444-8555-666666666666"
         conv = {

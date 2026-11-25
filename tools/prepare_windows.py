@@ -16,7 +16,7 @@ def prepare(output: Path, launcher: str = "py") -> Path:
         raise ValueError("output must be outside the source plugin")
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite {output}")
-    shutil.copytree(source, output, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(source, output, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
     hooks_path = output / "hooks.json"
     hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
     command = "py -3" if launcher == "py" else "python"

@@ -70,6 +70,39 @@ class WindowsPreviewTests(unittest.TestCase):
             with self.assertRaises(agy_adapter.BackendError):
                 agy_adapter._stream_result(invalid)
 
+    def test_windows_preview_is_read_only_and_deduplicated(self):
+        from test_title import FakeBackend
+        cid = "11111111-2222-4333-8444-555555555555"
+        conv = {"id": cid, "name": "Initial", "archived": False, "is_subagent": False,
+                "project_id": "project", "cwd": "",
+                "turns": [{"id": "0", "raw_user_text": "开发自动命名插件",
+                           "messages": [{"role": "user", "text": "开发自动命名插件"}]}]}
+        backend = FakeBackend(conv)
+        generator = mock.Mock(return_value=(
+            {"action": "rename", "title": "🧩 插件｜自动命名", "reason": "明确目标"}, {}))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sys, "platform", "win32"), \
+                mock.patch.object(oil_agy_title.time, "sleep"):
+            root = Path(tmp)
+            (root / "config.json").write_text('{"windows_auto_preview":true}', encoding="utf-8")
+            cfg = oil_agy_title.load_config(root)
+            result = oil_agy_title.process_conversation(backend, generator, cid, root, cfg,
+                                                        from_hook=True)
+            self.assertEqual(result["status"], "windows_preview")
+            self.assertEqual(result["title"], "🧩 插件｜自动命名")
+            result = oil_agy_title.process_conversation(backend, generator, cid, root, cfg,
+                                                        from_hook=True)
+            self.assertEqual(result["status"], "unchanged")
+            generator.assert_called_once()
+            self.assertEqual(backend.renamed_to, [])
+            with self.assertRaises(agy_adapter.BackendError):
+                oil_agy_title.process_conversation(backend, generator, cid, root, cfg, apply=True)
+            backend.conv["name"] = "用户手动设置"
+            result = oil_agy_title.process_conversation(backend, generator, cid, root, cfg,
+                                                        from_hook=True)
+            self.assertEqual(result["status"], "manual_title")
+            generator.assert_called_once()
+            self.assertEqual(backend.renamed_to, [])
+
     def test_cli_path_exclusion(self):
         self.assertFalse(oil_agy_title.is_desktop_hook_event({
             "transcriptPath": r"C:\Users\User\.gemini\antigravity\brain\x",

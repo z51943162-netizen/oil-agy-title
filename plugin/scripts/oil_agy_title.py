@@ -689,6 +689,8 @@ def main() -> int:
                 workspace_paths=payload.get("workspacePaths") or None,
                 cwd=payload.get("cwd") or None,
             )
+            if result.get("skip_reason") == "same_preview_turn":
+                return 0  # Keep the previous suggestion visible in status.
             if result["status"] not in ("renamed", "kept"):
                 audit(root, cid, {**result, "has_ls_env": payload.get("has_ls_env")})
             return 0
