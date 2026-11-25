@@ -5,3 +5,5 @@ __pycache__/
 *.tmp
 assets/readme/source/*-raw.*
 assets/readme/source/*-chroma.*
+
+/dist/

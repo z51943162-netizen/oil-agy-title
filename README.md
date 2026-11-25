@@ -129,8 +129,12 @@ python3 -m unittest discover -s plugin/tests -v
 - **数据去向与隐私**：命名时仅提取最近 5 轮用户需求与最终回复摘录，通过本机已登录的 `agy` CLI 发送至 Antigravity 模型服务，不向任何第三方服务发送数据；本地数据目录仅记录状态、候选标题、简短理由与 token 统计，不保存完整对话原文。
 - **后台生效时机**：实测当前 Antigravity 桌面版执行 `Stop` Hook 时未向 Hook 进程注入 `ANTIGRAVITY_LS_ADDRESS`，后台自动触发走 `.pbtxt` 原子写入兜底；桌面端重载或刷新会话状态后会同步到侧边栏与索引。在对话内通过 Skill 执行 `rename --apply` 时走官方 `UpdateConversation` 接口，可立即热刷新。
 - **历史会话不批量改动**：只对安装后产生新对话轮次的会话生效，不会主动扫描和重命名旧历史。
-- **兼容范围**：仅适用于 **Antigravity 桌面端**。macOS（Python 3.9 与 3.14）已通过单元测试与真实会话验证；Linux 仅代码兼容、桌面端未实测；Windows 暂不支持当前 POSIX Shell 写法的 `hooks.json`。离线环境可查看状态和暂停，生成新标题需要联网。
+- **兼容范围**：仅适用于 **Antigravity 桌面端**。macOS（Python 3.9 与 3.14）已通过单元测试与真实会话验证；Linux 仅代码兼容、桌面端未实测；Windows 10/11 新增实验性预览包（尚未真实环境验证），不支持自动写回；详见 [Windows 使用说明](docs/windows.md)。离线环境可查看状态和暂停，生成新标题需要联网。
 
 ## 许可证
 
 [MIT](LICENSE)
+
+## Windows 10/11 实验性预览版
+
+请阅读 [Windows 使用说明](docs/windows.md)，先构建适配包再验证。直接安装原始 `plugin/` 仍使用 POSIX Hook，Windows 不适用。默认不自动调用模型，不调用内部 RPC、不写 Antigravity 会话文件。启用后台预览后仅生成候选，需用户手动应用。

@@ -41,6 +41,7 @@ DEFAULTS = {
     "model_timeout_seconds": 60,
     "max_parallel_workers": 2,
     "allow_pbtxt_fallback": True,
+    "windows_auto_preview": False,
 }
 EMOJI = ("🎬", "🧩", "🔎", "📝", "📅", "🎨", "⚙️", "💬")
 POLICY_VERSION = 1
@@ -79,6 +80,10 @@ def atomic_json(path: Path, value: dict) -> None:
 
 def load_config(root: Path) -> dict:
     config = DEFAULTS | read_json(root / "config.json")
+    if not isinstance(config["windows_auto_preview"], bool):
+        raise ValueError("windows_auto_preview 必须是布尔值")
+    if sys.platform == "win32":
+        config["allow_pbtxt_fallback"] = False
     if not isinstance(config["enabled"], bool):
         raise ValueError("enabled 必须是布尔值")
     if not isinstance(config["allow_pbtxt_fallback"], bool):
@@ -345,6 +350,11 @@ def process_conversation(
     conversation_id = valid_id(conversation_id)
     if not config["enabled"]:
         return {"status": "disabled"}
+    if sys.platform == "win32" and apply:
+        raise BackendError("Windows 预览版不支持自动写回")
+    preview_hook = sys.platform == "win32" and from_hook
+    if preview_hook and not config["windows_auto_preview"]:
+        return {"status": "windows_hook_ready", "reason": "自动预览未启用"}
 
     wait_sec = config["model_timeout_seconds"] * 2 + 15 if from_hook else 0
     with conversation_lock(root, conversation_id, wait_sec) as acquired:
@@ -386,6 +396,17 @@ def process_conversation(
                 audit(root, conversation_id, {"status": "initial_baseline_recovered"})
         if state.get("locked"):
             return {"status": "locked", "title": before["title"]}
+        if preview_hook:
+            if state.get("windows_preview_title") not in (None, before["title"]):
+                state.update(locked=True, lock_reason="Windows 预览检测到外部改名")
+                atomic_json(path, state)
+                return {"status": "manual_title", "title": before["title"]}
+            if state.get("windows_preview_turn") == before["latest_id"]:
+                return {"status": "unchanged", "skip_reason": "same_preview_turn"}
+            # Claim the turn before any model call, including failed attempts.
+            state.update(windows_preview_turn=before["latest_id"],
+                         windows_preview_title=before["title"])
+            atomic_json(path, state)
         if established and "last_seen_title" in state and state["last_seen_title"] != before["title"]:
             if apply:
                 state.update(locked=True, lock_reason="检测到外部改名", last_seen_title=before["title"])
@@ -449,6 +470,17 @@ def process_conversation(
         if skipped:
             result["skip_reason"] = "confirmation_only"
         if not apply:
+            if preview_hook:
+                current = load_config(root)
+                if not current["enabled"] or not current["windows_auto_preview"]:
+                    return {"status": "disabled"}
+                after = snapshot(backend.read(conversation_id, transcript_path=transcript_path,
+                                             workspace_paths=workspace_paths, cwd=cwd), config)
+                if after["title"] != before["title"] or after["fingerprint"] != before["fingerprint"]:
+                    return {"status": "stale_result", "title": after["title"]}
+                if read_json(path).get("locked"):
+                    return {"status": "locked"}
+                result["status"] = "windows_preview"
             return result
 
         # 写入前再次检查：防止模型运行期间用户发了新消息、手动改名、暂停或归档。
@@ -497,16 +529,19 @@ def process_conversation(
 
 
 def is_desktop_hook_event(event: dict) -> bool:
-    for key in ("transcriptPath", "artifactDirectoryPath"):
-        val = str(event.get(key) or "")
-        if "antigravity-cli" in val or "antigravity-ide" in val:
-            return False
-        if "/.gemini/antigravity/" in val.replace("\\", "/"):
-            return True
+    paths = [str(event.get(key) or "").replace("\\", "/").casefold()
+             for key in ("transcriptPath", "artifactDirectoryPath")]
+    if any("antigravity-cli" in val or "antigravity-ide" in val for val in paths):
+        return False
+    if any("/.gemini/antigravity/" in val for val in paths):
+        return True
     # 若载荷未带路径，检查 app_data_dir 下是否存在该对话目录。
     cid = event.get("conversationId") or ""
     if cid:
-        return (app_data_dir() / "brain" / cid).is_dir()
+        try:
+            return (app_data_dir() / "brain" / valid_id(cid)).is_dir()
+        except (ValueError, TypeError, AttributeError):
+            return False
     return False
 
 
@@ -529,6 +564,9 @@ def dispatch_hook(root: Path, config: dict) -> None:
     if not is_desktop_hook_event(event):
         return
     cid = valid_id(event["conversationId"])
+    if sys.platform == "win32" and not config["windows_auto_preview"]:
+        audit(root, cid, {"status": "windows_hook_ready", "reason": "自动预览未启用"})
+        return
     payload = {
         "conversationId": cid,
         "transcriptPath": event.get("transcriptPath") or "",
@@ -539,20 +577,26 @@ def dispatch_hook(root: Path, config: dict) -> None:
     }
     child_env = os.environ.copy()
     child_env["OIL_AGY_TITLE_WORKER"] = "1"
+    spawn_options = (
+        {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
+        if sys.platform == "win32" else {"start_new_session": True}
+    )
     subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "worker", "--payload-json", json.dumps(payload, ensure_ascii=False)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
         close_fds=True,
         env=child_env,
+        **spawn_options,
     )
 
 
 def doctor(backend: AntigravityBackend, root: Path, config: dict, conversation_id: str | None = None) -> dict:
     binary = find_agy(config.get("agy_bin"))
-    ver = subprocess.run([binary, "--help"], capture_output=True, text=True, encoding="utf-8", timeout=10)
+    run_options = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+    ver = subprocess.run([binary, "--help"], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=10, **run_options)
     output: dict = {
         "python": sys.version.split()[0],
         "plugin_root": str(PLUGIN_ROOT),
@@ -560,6 +604,8 @@ def doctor(backend: AntigravityBackend, root: Path, config: dict, conversation_i
         "app_data_dir": str(backend.app_dir),
         "config": config,
         "rpc_env_present": backend.has_rpc,
+        "platform": sys.platform,
+        "title_write_supported": sys.platform != "win32",
         "hooks_file_exists": (PLUGIN_ROOT / "hooks.json").is_file(),
         "agy_bin": binary,
         "agy_ok": ver.returncode == 0,
@@ -605,6 +651,8 @@ def main() -> int:
     p.add_argument("--model")
     p.add_argument("--agy-bin")
     p.add_argument("--allow-pbtxt-fallback", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--windows-auto-preview", action=argparse.BooleanOptionalAction, default=None,
+                   help="Windows 可选后台生成候选标题（会消耗模型额度，不写回会话）")
 
     for name in ("rename", "lock", "unlock"):
         p = sub.add_parser(name)
@@ -636,11 +684,13 @@ def main() -> int:
                     root, cid, config, ctx,
                     before_model=lambda: ensure_title_active(backend, cid, root),
                 ),
-                cid, root, config, apply=True, from_hook=True,
+                cid, root, config, apply=sys.platform != "win32", from_hook=True,
                 transcript_path=payload.get("transcriptPath") or None,
                 workspace_paths=payload.get("workspacePaths") or None,
                 cwd=payload.get("cwd") or None,
             )
+            if result.get("skip_reason") == "same_preview_turn":
+                return 0  # Keep the previous suggestion visible in status.
             if result["status"] not in ("renamed", "kept"):
                 audit(root, cid, {**result, "has_ls_env": payload.get("has_ls_env")})
             return 0
@@ -656,7 +706,11 @@ def main() -> int:
                 if args.agy_bin:
                     changes["agy_bin"] = find_agy(args.agy_bin)
                 if args.allow_pbtxt_fallback is not None:
+                    if sys.platform == "win32" and args.allow_pbtxt_fallback:
+                        raise BackendError("Windows 预览版禁止 pbtxt 写回")
                     changes["allow_pbtxt_fallback"] = args.allow_pbtxt_fallback
+                if args.windows_auto_preview is not None:
+                    changes["windows_auto_preview"] = args.windows_auto_preview
             atomic_json(config_path, changes)
             print(json.dumps(load_config(root), ensure_ascii=False, indent=2))
             return 0
@@ -703,6 +757,8 @@ def main() -> int:
                 state.update(locked=args.command == "lock", lock_reason="用户设置", last_seen_title=current)
                 state.pop("last_fingerprint", None)
                 state.pop("pending_title", None)
+                state.pop("windows_preview_turn", None)
+                state.pop("windows_preview_title", None)
                 atomic_json(path, state)
                 print(json.dumps({"status": args.command, "conversation_id": cid, "title": current}, ensure_ascii=False))
                 return 0
