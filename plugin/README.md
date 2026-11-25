@@ -9,3 +9,5 @@ Antigravity 桌面端会话自动命名插件（非官方）。
 - `skills/oil-agy-title/`：对话内预览、手动重命名、锁定/解锁、暂停/恢复与切换内置模型的管理 Skill。
 
 完整说明、安装方式、兼容范围与数据边界见仓库根目录 [README.md](../README.md)。
+
+Windows：请先按 [Windows 使用说明](../docs/windows.md) 构建适配包，不要直接安装原始 POSIX Hook。Windows 仅预览，不写回标题。

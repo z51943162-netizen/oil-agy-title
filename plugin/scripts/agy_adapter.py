@@ -49,6 +49,12 @@ def app_data_dir() -> Path:
 
 
 def find_agy(explicit: str | None = None) -> str:
+    if sys.platform == "win32":
+        candidate = explicit or "agy.exe"
+        resolved = shutil.which(candidate) or (candidate if Path(candidate).is_file() else None)
+        if resolved and Path(resolved).is_file() and Path(resolved).suffix.lower() == ".exe":
+            return str(Path(resolved).resolve())
+        raise BackendError("未找到原生 agy.exe；请加入 PATH 或 configure --agy-bin 指定完整 exe 路径")
     if explicit:
         resolved = shutil.which(explicit) or (explicit if Path(explicit).is_file() else None)
         if resolved and os.access(resolved, os.X_OK):
@@ -165,6 +171,10 @@ class AntigravityBackend:
         self.app_dir = data_root or app_data_dir()
         self.ls_address = (os.environ.get("ANTIGRAVITY_LS_ADDRESS") or "").strip()
         self.csrf_token = (os.environ.get("ANTIGRAVITY_CSRF_TOKEN") or "").strip()
+        # Windows preview edition: no undocumented ConversationService access.
+        if sys.platform == "win32":
+            self.ls_address = ""
+            self.csrf_token = ""
         self.timeout = timeout
         self.last_write_backend = "none"
 
@@ -212,7 +222,7 @@ class AntigravityBackend:
         if not db_path.is_file():
             return {}
         try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+            conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2.0)
             try:
                 row = conn.execute(
                     "SELECT title, workspace_uris, project_id, parent_conversation_id, nesting_depth "
@@ -312,7 +322,7 @@ class AntigravityBackend:
         db_path = self.app_dir / "conversation_summaries.db"
         if db_path.is_file():
             try:
-                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+                conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2.0)
                 try:
                     if project_id:
                         rows = conn.execute(
@@ -335,6 +345,8 @@ class AntigravityBackend:
         return titles
 
     def rename(self, conversation_id: str, title: str, *, allow_pbtxt_fallback: bool = True) -> str:
+        if sys.platform == "win32":
+            raise BackendError("Windows 预览版不支持自动写回；请在桌面端手动修改标题")
         rpc_error = None
         if self.has_rpc:
             try:
@@ -433,6 +445,25 @@ def _worker_env() -> dict[str, str]:
     return env
 
 
+def _stream_result(raw: str) -> dict:
+    """Extract exactly one documented stream-json result."""
+    results = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError as exc:
+            raise BackendError("agy stream-json 输出包含无效 JSON") from exc
+        if not isinstance(event, dict):
+            raise BackendError("agy stream-json 事件必须为对象")
+        if event.get("event") == "result":
+            results.append(event.get("result"))
+    if len(results) != 1 or not isinstance(results[0], dict):
+        raise BackendError("agy stream-json 未返回唯一结果")
+    return results[0]
+
+
 def _call_agy_model(root: Path, conversation_id: str, config: dict, context: dict,
                     policy_path: Path, remaining: float) -> tuple[dict, dict]:
     binary = find_agy(config.get("agy_bin"))
@@ -458,6 +489,17 @@ def _call_agy_model(root: Path, conversation_id: str, config: dict, context: dic
             "--output-format", "json",
             "--print-timeout", f"{max(5, int(remaining))}s",
         ]
+        run_options = {}
+        windows = sys.platform == "win32"
+        if windows:
+            args = [binary, "--input-format", "stream-json", "--output-format", "stream-json",
+                    "--model", config["model"], "--disable-slash-commands", "--sandbox",
+                    "--print-timeout", f"{max(5, int(remaining))}s"]
+            run_options = {
+                "input": json.dumps({"event": "user", "message": {"content": prompt}},
+                                    ensure_ascii=False) + "\n",
+                "creationflags": subprocess.CREATE_NO_WINDOW,
+            }
         try:
             proc = subprocess.run(
                 args,
@@ -467,9 +509,10 @@ def _call_agy_model(root: Path, conversation_id: str, config: dict, context: dic
                 encoding="utf-8",
                 env=_worker_env(),
                 timeout=max(10.0, remaining + 5.0),
+                **run_options,
             )
             raw_out = (proc.stdout or "").strip()
-            envelope = _extract_json_object(raw_out) if raw_out else {}
+            envelope = (_stream_result(raw_out) if windows else _extract_json_object(raw_out)) if raw_out else {}
             if isinstance(envelope.get("usage"), dict):
                 usage = envelope["usage"]
             if proc.returncode != 0 or envelope.get("status") != "SUCCESS":

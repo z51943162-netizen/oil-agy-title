@@ -2,7 +2,7 @@
 name: oil-agy-title
 description: 管理 Antigravity 桌面端会话的后台自动命名：检查运行状态与 Hook、预览或应用会话标题、固定/解锁标题、暂停/恢复自动命名、查看模型用量与切换内置模型。当用户要求管理 Antigravity 桌面端会话标题或配置本插件时使用；不用于文章标题、视频标题或文件重命名，也不在普通对话结束时由主 Agent 主动调用。
 license: MIT
-compatibility: Antigravity 桌面端专用；需要 Python 3.9+ 与已登录的 agy CLI。macOS 已实测；Linux 仅代码兼容未实测桌面端；Windows 暂不支持当前 POSIX hooks.json 入口。
+compatibility: Antigravity 桌面端专用；需要 Python 3.9+ 与已登录的 agy CLI。macOS 已实测；Linux 仅代码兼容未实测桌面端；Windows 10/11 实验性预览版需先构建 Windows 插件包，尚未真实环境验证；禁止自动写回。
 metadata:
   version: "0.1.0"
 ---
@@ -47,3 +47,7 @@ metadata:
 - `stale_result`：模型生成期间对话或标题已变化，自动丢弃旧结果。
 - `ambiguous_title`：与同项目已有会话重名且重试后仍无法区分，保留原名。
 - `doctor` 通过不代表桌面端 `Stop` Hook 已真实触发；需在新对话结束后通过 `status` 查看日志确认。
+
+## Windows 预览版（实验性）
+
+Windows 使用 `py -3`（或已验证的原生 `python`）替代上述 `python3`。默认 Stop Hook 只记录 `windows_hook_ready`，不调用模型。用户明确同意消耗 Antigravity 额度并发送对话摘录后，可执行 `py -3 <入口> configure --windows-auto-preview`；使用 status 查看 `windows_preview` 候选标题，再通过桌面端手动改名。用 `configure --no-windows-auto-preview` 关闭。显式 rename 仍可预览；禁止 rename --apply、内部 RPC 与 pbtxt 写回。不要宣称已实现 Windows 全自动改名。
